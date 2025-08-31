@@ -25,6 +25,7 @@ export class RealtimeClient {
   private playbackQueue: AudioBuffer[] = [];
   private isPlaying: boolean = false;
   private nextPlaybackTime: number = 0;
+  private currentAudioSource: AudioBufferSourceNode | null = null;
 
   constructor(config: RealtimeConfig = {}) {
     this.config = {
@@ -164,8 +165,11 @@ export class RealtimeClient {
           type: 'server_vad',
           threshold: 0.5,
           prefix_padding_ms: 300,
-          silence_duration_ms: 500
-        }
+          silence_duration_ms: 200,  // Reduced for quicker interruption detection
+          vad_mode: 'aggressive'  // More sensitive to speech onset
+        },
+        tools: [],  // No tools needed for conversation
+        tool_choice: 'none'
       }
     };
 
@@ -216,6 +220,8 @@ export class RealtimeClient {
         break;
       
       case 'input_audio_buffer.speech_started':
+        // User started speaking - this is an interruption if assistant is talking
+        this.handleUserInterruption();
         this.emit('user.speaking.start');
         break;
       
@@ -227,6 +233,12 @@ export class RealtimeClient {
         if (data.item.type === 'message' && data.item.role === 'user') {
           this.emit('user.transcript', data.item.content?.[0]?.transcript || '');
         }
+        break;
+      
+      case 'response.cancelled':
+        // Response was cancelled due to interruption
+        this.clearAudioQueue();
+        this.emit('assistant.interrupted');
         break;
       
       case 'response.done':
@@ -334,6 +346,9 @@ export class RealtimeClient {
     source.buffer = audioBuffer;
     source.connect(this.audioContext.destination);
 
+    // Store the current source so we can stop it if interrupted
+    this.currentAudioSource = source;
+
     // Schedule playback
     const now = this.audioContext.currentTime;
     const playTime = Math.max(now, this.nextPlaybackTime);
@@ -344,8 +359,45 @@ export class RealtimeClient {
 
     // Process next chunk when this one finishes
     source.onended = () => {
+      this.currentAudioSource = null;
       this.processPlaybackQueue();
     };
+  }
+
+  private handleUserInterruption() {
+    // Stop current audio playback immediately
+    if (this.currentAudioSource) {
+      try {
+        this.currentAudioSource.stop();
+        this.currentAudioSource = null;
+      } catch (e) {
+        // Ignore if already stopped
+      }
+    }
+    
+    // Clear the audio queue
+    this.clearAudioQueue();
+    
+    // Send cancel message to stop the assistant's current response
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({
+        type: 'response.cancel'
+      }));
+    }
+  }
+
+  private clearAudioQueue() {
+    this.playbackQueue = [];
+    this.isPlaying = false;
+    this.nextPlaybackTime = 0;
+    if (this.currentAudioSource) {
+      try {
+        this.currentAudioSource.stop();
+        this.currentAudioSource = null;
+      } catch (e) {
+        // Ignore if already stopped
+      }
+    }
   }
 
   updateContext(words: WordEntry[], homeLanguage: string) {
