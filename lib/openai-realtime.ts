@@ -97,24 +97,77 @@ export class RealtimeClient {
     }
   }
 
-  private practiceMode: 'pronunciation' | 'vocabulary' | 'conversation' = 'conversation';
+  private practiceMode: 'pronunciation' | 'vocabulary' | 'conversation' | 'pronunciation-test' = 'conversation';
   private homeLanguage: string = 'English';
   private recentWords: string[] = [];
+  private currentTestWord: string | null = null;
+  private currentWordIndex: number = 0;
 
   private createSession() {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
     // Create mode-specific instructions
     const modeInstructions = {
-      pronunciation: `Focus on pronunciation practice with THE UPLOADED WORDS. Listen carefully to how the student pronounces these specific words. 
-        Provide gentle, constructive feedback on their pronunciation. Help them with difficult sounds in these words. 
-        Practice the uploaded words in context rather than isolation. Create sentences using these words.`,
+      pronunciation: `You are a pronunciation coach helping the student practice pronunciation ONE WORD AT A TIME.
+        
+        Words to practice (BUT NEVER REVEAL THIS LIST TO THE STUDENT): ${this.recentWords.join(', ')}
+        
+        CRITICAL RULE: Present and test ONLY ONE WORD AT A TIME. Never mention the other words or that there's a list.
+        
+        Your approach:
+        1. Start by asking the student to pronounce: "${this.recentWords.length > 0 ? this.recentWords[0] : 'no words available'}"
+        2. Listen carefully to their pronunciation
+        3. Provide specific, encouraging feedback
+        4. Let them try 2-3 times if needed
+        5. When ready, say something like "Great! Now let's try another word: [next word]"
+        6. Continue this pattern through all words
+        
+        Focus on:
+        - Clear articulation of each sound
+        - Correct stress and intonation  
+        - Common pronunciation mistakes
+        - Encouraging improvement
+        
+        Remember: The student should only know about the current word being tested, not the full list.`,
       vocabulary: `Focus on vocabulary building using THE UPLOADED WORDS. Test understanding of these specific word meanings. 
         Use each uploaded word in different contexts. Ask questions that require using these vocabulary words. 
         Create scenarios where they need to use these specific words naturally.`,
       conversation: `Engage in natural conversation that incorporates ALL THE UPLOADED WORDS. 
         Build the conversation around topics that naturally use these words. 
-        Keep weaving these words into the discussion. Gently correct errors but prioritize using all the uploaded vocabulary.`
+        Keep weaving these words into the discussion. Gently correct errors but prioritize using all the uploaded vocabulary.`,
+      'pronunciation-test': `You are a professional pronunciation coach conducting a ONE-ON-ONE PRONUNCIATION TEST.
+        
+        CURRENT WORD TO TEST: "${this.currentTestWord}"
+        
+        IMPORTANT: You are testing ONLY this single word. Do NOT mention any other words or indicate there are more words to test.
+        
+        YOUR APPROACH:
+        1. Greet the student warmly and ask them to pronounce: "${this.currentTestWord}"
+        2. Say something like: "Let's test your pronunciation. Please say the word: ${this.currentTestWord}"
+        3. Listen VERY CAREFULLY to their pronunciation
+        
+        EVALUATION CRITERIA:
+        - Correct vowel sounds (30 points)
+        - Correct consonant sounds (30 points) 
+        - Proper stress/emphasis (20 points)
+        - Clear articulation (10 points)
+        - Natural intonation (10 points)
+        
+        AFTER THEY PRONOUNCE THE WORD:
+        1. Provide a score from 0-100
+        2. Give specific, encouraging feedback
+        3. Format your evaluation as:
+           Score: [number]/100
+           What I heard: [their pronunciation]
+           Feedback: [specific tips for improvement]
+        
+        SCORING GUIDELINES:
+        - 90-100: Excellent, native-like pronunciation
+        - 70-89: Good with minor issues
+        - 50-69: Understandable but needs improvement
+        - Below 50: Significant pronunciation difficulties
+        
+        Remember: Focus ONLY on "${this.currentTestWord}". Be encouraging but honest. This is about helping them improve.`
     };
 
     // Build language-aware instructions
@@ -146,15 +199,15 @@ export class RealtimeClient {
           Current practice mode: ${this.practiceMode.toUpperCase()}
           ${modeInstructions[this.practiceMode]}
           
-          ${wordsContext}
+          ${this.practiceMode === 'pronunciation-test' ? '' : wordsContext}
           
           IMPORTANT BEHAVIORS:
           1. START the conversation immediately with a friendly greeting in ${this.homeLanguage}
-          2. If words were uploaded, immediately start practicing THOSE SPECIFIC WORDS - don't ask what to focus on
+          2. If words were uploaded, immediately start practicing - don't ask what to focus on
           3. If no words uploaded, suggest adding words or start general practice
           4. Be encouraging and patient - learning a language is challenging
           5. Keep responses concise - this is a conversation, not a lecture
-          6. For pronunciation mode: Practice each uploaded word's pronunciation in sentences
+          6. For pronunciation mode: Test ONE WORD AT A TIME - never present as a list
           7. For vocabulary mode: Test understanding of each uploaded word with examples
           8. For conversation mode: Create natural dialogue using all the uploaded words
           
@@ -178,10 +231,22 @@ export class RealtimeClient {
     // Send initial response request to make the tutor start talking
     setTimeout(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        const startInstructions = this.recentWords.length > 0
-          ? `Start with a warm greeting, then immediately begin practicing these words: ${this.recentWords.join(', ')}. 
-             Don't ask what to practice - jump right into using these words in ${this.practiceMode} mode.`
-          : `Start with a warm greeting and ask what words they'd like to practice today, or suggest they add some words to their vocabulary list.`;
+        let startInstructions;
+        
+        if (this.practiceMode === 'pronunciation-test') {
+          // For pronunciation test, only mention the current word
+          startInstructions = `Greet the student warmly and ask them to pronounce the word: "${this.currentTestWord}". 
+                              Be natural and encouraging, like a real teacher would be.`;
+        } else if (this.practiceMode === 'pronunciation' && this.recentWords.length > 0) {
+          // For pronunciation practice, start with the first word only
+          startInstructions = `Start with a warm greeting, then ask the student to pronounce the word: "${this.recentWords[0]}". 
+                              Focus on this one word first. Be encouraging and provide helpful feedback.`;
+        } else if (this.recentWords.length > 0) {
+          startInstructions = `Start with a warm greeting, then immediately begin practicing these words: ${this.recentWords.join(', ')}. 
+                              Don't ask what to practice - jump right into using these words in ${this.practiceMode} mode.`;
+        } else {
+          startInstructions = `Start with a warm greeting and ask what words they'd like to practice today, or suggest they add some words to their vocabulary list.`;
+        }
         
         this.ws.send(JSON.stringify({
           type: 'response.create',
@@ -430,7 +495,7 @@ export class RealtimeClient {
     }
   }
 
-  setPracticeMode(mode: 'pronunciation' | 'vocabulary' | 'conversation') {
+  setPracticeMode(mode: 'pronunciation' | 'vocabulary' | 'conversation' | 'pronunciation-test') {
     // Store the practice mode
     this.practiceMode = mode;
 
@@ -442,7 +507,9 @@ export class RealtimeClient {
         vocabulary: `Switch to VOCABULARY mode. Test understanding of word meanings. 
           Use words in different contexts. Create scenarios for natural usage.`,
         conversation: `Switch to CONVERSATION mode. Engage in natural, flowing conversation. 
-          Incorporate learned words naturally. Prioritize fluency over perfect accuracy.`
+          Incorporate learned words naturally. Prioritize fluency over perfect accuracy.`,
+        'pronunciation-test': `Switch to PRONUNCIATION TEST mode. Be METICULOUS in evaluating pronunciation.
+          Listen carefully and provide numerical scores with detailed feedback.`
       };
 
       this.ws.send(JSON.stringify({
@@ -457,6 +524,10 @@ export class RealtimeClient {
         }
       }));
     }
+  }
+
+  setTestWord(word: string) {
+    this.currentTestWord = word;
   }
 
   disconnect() {

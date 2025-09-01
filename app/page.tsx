@@ -4,15 +4,17 @@ import { useState } from 'react';
 import { VoiceInterface } from '@/components/VoiceInterface';
 import { WordManager } from '@/components/WordManager';
 import { PracticeModes } from '@/components/PracticeModes';
+import { PronunciationTest } from '@/components/PronunciationTest';
 import { LanguageSelector } from '@/components/LanguageSelector';
 import { Dashboard } from '@/components/Dashboard';
-import { Headphones, BookOpen, BarChart3, Settings } from 'lucide-react';
+import { Headphones, BookOpen, BarChart3, Settings, Mic } from 'lucide-react';
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<'practice' | 'words' | 'dashboard' | 'settings'>('practice');
+  const [activeTab, setActiveTab] = useState<'practice' | 'test' | 'words' | 'dashboard' | 'settings'>('practice');
 
   const tabs = [
     { id: 'practice' as const, label: 'Practice', icon: Headphones },
+    { id: 'test' as const, label: 'Test', icon: Mic },
     { id: 'words' as const, label: 'Words', icon: BookOpen },
     { id: 'dashboard' as const, label: 'Dashboard', icon: BarChart3 },
     { id: 'settings' as const, label: 'Settings', icon: Settings }
@@ -68,6 +70,10 @@ export default function Home() {
             <PracticeModes />
             <VoiceInterface />
           </div>
+        )}
+        
+        {activeTab === 'test' && (
+          <PronunciationTest />
         )}
         
         {activeTab === 'words' && (
