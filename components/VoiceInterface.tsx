@@ -149,6 +149,16 @@ export function VoiceInterface() {
         {/* Transcripts */}
         {(transcript || assistantTranscript) && (
           <div className="w-full space-y-4 mt-6">
+            {assistantTranscript && (
+              <div className="bg-green-50 rounded-lg p-4">
+                <div className="flex items-center space-x-2 mb-2">
+                  <Volume2 className="w-4 h-4 text-green-600" />
+                  <span className="text-sm font-medium text-green-600">Tutor</span>
+                </div>
+                <p className="text-gray-800 whitespace-pre-wrap">{assistantTranscript}</p>
+              </div>
+            )}
+            
             {transcript && (
               <div className="bg-blue-50 rounded-lg p-4">
                 <div className="flex items-center space-x-2 mb-2">
@@ -156,16 +166,6 @@ export function VoiceInterface() {
                   <span className="text-sm font-medium text-blue-600">You</span>
                 </div>
                 <p className="text-gray-800">{transcript}</p>
-              </div>
-            )}
-            
-            {assistantTranscript && (
-              <div className="bg-green-50 rounded-lg p-4">
-                <div className="flex items-center space-x-2 mb-2">
-                  <Volume2 className="w-4 h-4 text-green-600" />
-                  <span className="text-sm font-medium text-green-600">Tutor</span>
-                </div>
-                <p className="text-gray-800">{assistantTranscript}</p>
               </div>
             )}
           </div>

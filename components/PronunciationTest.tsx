@@ -199,9 +199,16 @@ export function PronunciationTest() {
               role: 'system',
               content: [{
                 type: 'text',
-                text: `Great job on that word! Now let's test a new word: "${testWords[nextIndex].word}". 
-                       Ask the student to pronounce this word. Focus only on this single word.
-                       Don't mention any other words or indicate how many words are left.`
+                text: `NEXT WORD TEST: "${testWords[nextIndex].word}"
+                       
+                       Remember to:
+                       1. Ask the student to pronounce this word clearly
+                       2. Listen carefully and evaluate critically
+                       3. Give specific feedback on any pronunciation issues
+                       4. Provide a score from 0-100 based on accuracy
+                       5. End your feedback with "Score: [number]/100"
+                       
+                       Be honest but encouraging. Students need real feedback to improve!`
               }]
             }
           }));
@@ -211,7 +218,7 @@ export function PronunciationTest() {
             type: 'response.create',
             response: {
               modalities: ['text', 'audio'],
-              instructions: `Ask the student to pronounce: "${testWords[nextIndex].word}". Be encouraging and natural.`
+              instructions: `Now test the word "${testWords[nextIndex].word}". Be critical but constructive in your evaluation.`
             }
           }));
         }
@@ -266,7 +273,16 @@ export function PronunciationTest() {
             role: 'system',
             content: [{
               type: 'text',
-              text: `The student wants to try again. Ask them to pronounce "${currentWord.word}" once more.`
+              text: `The student wants to try pronouncing "${currentWord.word}" again.
+                     
+                     IMPORTANT: Continue being CRITICAL in your evaluation!
+                     - Listen carefully to this new attempt
+                     - Compare it to their previous attempt
+                     - Note any improvements or continuing issues
+                     - Give a fair score based on this attempt
+                     - End with "Score: [number]/100"
+                     
+                     Be encouraging about improvements but honest about what still needs work.`
             }]
           }
         }));
@@ -274,7 +290,8 @@ export function PronunciationTest() {
         (clientRef.current as any).ws.send(JSON.stringify({
           type: 'response.create',
           response: {
-            modalities: ['text', 'audio']
+            modalities: ['text', 'audio'],
+            instructions: `Ask them to try "${currentWord.word}" again. Evaluate critically but note any improvements.`
           }
         }));
       }

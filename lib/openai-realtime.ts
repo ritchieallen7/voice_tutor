@@ -100,129 +100,196 @@ export class RealtimeClient {
   private practiceMode: 'pronunciation' | 'vocabulary' | 'conversation' | 'pronunciation-test' = 'conversation';
   private homeLanguage: string = 'English';
   private recentWords: string[] = [];
-  private currentTestWord: string | null = null;
   private currentWordIndex: number = 0;
+  private attemptCount: number = 0;
+  private testWord: string = '';  // For pronunciation test mode
 
   private createSession() {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
-    // Create mode-specific instructions
-    const modeInstructions = {
-      pronunciation: `You are a pronunciation coach helping the student practice pronunciation ONE WORD AT A TIME.
-        
-        Words to practice (BUT NEVER REVEAL THIS LIST TO THE STUDENT): ${this.recentWords.join(', ')}
-        
-        CRITICAL RULE: Present and test ONLY ONE WORD AT A TIME. Never mention the other words or that there's a list.
-        
-        Your approach:
-        1. Start by asking the student to pronounce: "${this.recentWords.length > 0 ? this.recentWords[0] : 'no words available'}"
-        2. Listen carefully to their pronunciation
-        3. Provide specific, encouraging feedback
-        4. Let them try 2-3 times if needed
-        5. When ready, say something like "Great! Now let's try another word: [next word]"
-        6. Continue this pattern through all words
-        
-        Focus on:
-        - Clear articulation of each sound
-        - Correct stress and intonation  
-        - Common pronunciation mistakes
-        - Encouraging improvement
-        
-        Remember: The student should only know about the current word being tested, not the full list.`,
-      vocabulary: `Focus on vocabulary building using THE UPLOADED WORDS. Test understanding of these specific word meanings. 
-        Use each uploaded word in different contexts. Ask questions that require using these vocabulary words. 
-        Create scenarios where they need to use these specific words naturally.`,
-      conversation: `Engage in natural conversation that incorporates ALL THE UPLOADED WORDS. 
-        Build the conversation around topics that naturally use these words. 
-        Keep weaving these words into the discussion. Gently correct errors but prioritize using all the uploaded vocabulary.`,
-      'pronunciation-test': `You are a professional pronunciation coach conducting a ONE-ON-ONE PRONUNCIATION TEST.
-        
-        CURRENT WORD TO TEST: "${this.currentTestWord}"
-        
-        IMPORTANT: You are testing ONLY this single word. Do NOT mention any other words or indicate there are more words to test.
-        
-        YOUR APPROACH:
-        1. Greet the student warmly and ask them to pronounce: "${this.currentTestWord}"
-        2. Say something like: "Let's test your pronunciation. Please say the word: ${this.currentTestWord}"
-        3. Listen VERY CAREFULLY to their pronunciation
-        
-        EVALUATION CRITERIA:
-        - Correct vowel sounds (30 points)
-        - Correct consonant sounds (30 points) 
-        - Proper stress/emphasis (20 points)
-        - Clear articulation (10 points)
-        - Natural intonation (10 points)
-        
-        AFTER THEY PRONOUNCE THE WORD:
-        1. Provide a score from 0-100
-        2. Give specific, encouraging feedback
-        3. Format your evaluation as:
-           Score: [number]/100
-           What I heard: [their pronunciation]
-           Feedback: [specific tips for improvement]
-        
-        SCORING GUIDELINES:
-        - 90-100: Excellent, native-like pronunciation
-        - 70-89: Good with minor issues
-        - 50-69: Understandable but needs improvement
-        - Below 50: Significant pronunciation difficulties
-        
-        Remember: Focus ONLY on "${this.currentTestWord}". Be encouraging but honest. This is about helping them improve.`
+    // Reset tracking
+    this.currentWordIndex = 0;
+    this.attemptCount = 0;
+    
+    // Define the function for getting next word
+    const getNextWordFunction = {
+      type: 'function',
+      name: 'get_next_word',
+      description: 'Get the next word to practice when ready to move on',
+      parameters: {
+        type: 'object',
+        properties: {
+          current_word: {
+            type: 'string',
+            description: 'The word that was just practiced'
+          },
+          feedback_given: {
+            type: 'boolean',
+            description: 'Whether feedback was provided for the current word'
+          }
+        },
+        required: ['current_word', 'feedback_given']
+      }
     };
 
     // Build language-aware instructions
     const languageInstructions = this.homeLanguage.toLowerCase() !== 'english' 
-      ? `IMPORTANT: The student's native language is ${this.homeLanguage}. 
-         Give ALL instructions, greetings, encouragement, and explanations in ${this.homeLanguage}.
-         However, the English content being taught (words, phrases, example sentences) must remain in English.
-         Be bilingual - speak to them in ${this.homeLanguage} but teach them English.
-         For example: greet in ${this.homeLanguage}, explain in ${this.homeLanguage}, but practice English words.`
+      ? `CRITICAL LANGUAGE REQUIREMENT: The student's native language is ${this.homeLanguage}. 
+         YOU MUST speak ${this.homeLanguage} for ALL communication except the English words being taught.
+         - Greet the student in ${this.homeLanguage}
+         - Give ALL instructions in ${this.homeLanguage}
+         - Provide ALL feedback in ${this.homeLanguage}
+         - Give ALL encouragement in ${this.homeLanguage}
+         - Explain everything in ${this.homeLanguage}
+         Only the English vocabulary words themselves should be in English.
+         Example: If ${this.homeLanguage} is French, say "Bonjour! Aujourd'hui nous allons pratiquer le mot 'hello'."`
       : `The student is a native English speaker learning to improve their English skills.
          Use clear, simple English for all communication.`;
 
-    const wordsContext = this.recentWords.length > 0 
-      ? `IMPORTANT: The student has uploaded these specific words to practice: ${this.recentWords.join(', ')}. 
-         These are THE WORDS you must focus on. Don't ask what to practice - use THESE WORDS.
-         Incorporate all of these words naturally throughout the session.`
-      : `The student hasn't added any specific words yet. Help them get started by suggesting they add words to practice, 
-         or practice general English conversation.`;
+    // Check if we have enough words
+    if (this.recentWords.length < 3) {
+      const notEnoughWordsMsg = this.homeLanguage.toLowerCase() !== 'english'
+        ? `${this.homeLanguage}: You need at least 3 words to practice. Please go to FlashAcademy to complete some lessons and add more words.`
+        : `You need at least 3 words to practice. Please go to FlashAcademy to complete some lessons and add more words.`;
+      
+      const sessionConfig = {
+        type: 'session.update',
+        session: {
+          modalities: ['text', 'audio'],
+          instructions: `IMPORTANT: The student has fewer than 3 words. 
+            Tell them: "${notEnoughWordsMsg}"
+            FlashAcademy is a language learning platform. Always say "FlashAcademy" in English.
+            ${languageInstructions}`,
+          voice: this.config.voice,
+          input_audio_format: 'pcm16',
+          output_audio_format: 'pcm16',
+          input_audio_transcription: {
+            model: 'whisper-1'
+          },
+          turn_detection: {
+            type: 'server_vad',
+            threshold: 0.7,  // Increased to reduce false triggers
+            prefix_padding_ms: 300,
+            silence_duration_ms: 500  // Increased to require longer silence
+          },
+          temperature: 0.8
+        }
+      };
+      this.ws.send(JSON.stringify(sessionConfig));
+      return;
+    }
+
+    const wordsContext = this.practiceMode === 'pronunciation-test' 
+      ? '' // In test mode, we handle words individually
+      : '';
+
+    const pronunciationInstructions = this.practiceMode === 'pronunciation' 
+      ? `YOU ARE A STRICT PRONUNCIATION TEACHER. Your ONLY job is to teach pronunciation.
+         
+         CRITICAL: You have a function 'move_to_next_word' that you MUST CALL after each word.
+         
+         CURRENT WORD TO TEACH: "${this.recentWords[this.currentWordIndex]}"
+         
+         YOUR EXACT PROTOCOL (FOLLOW PRECISELY):
+         1. Ask: "Can you pronounce '${this.recentWords[this.currentWordIndex]}' for me?"
+         2. Listen to their first attempt
+         3. Give SPECIFIC feedback (e.g., "The 'th' needs your tongue between your teeth")
+         4. Say: "Let's try once more"
+         5. Listen to their second attempt
+         6. Give final feedback
+         7. ⚠️ CRITICAL: You MUST call the function move_to_next_word with:
+            {
+              "current_word": "${this.recentWords[this.currentWordIndex]}",
+              "attempts_made": 2
+            }
+         
+         The function will return the next word. If there is one, teach it the same way.
+         If no more words, the function will tell you the session is complete.
+         
+         NEVER skip calling the function. ALWAYS call it after 2 attempts.
+         
+         If student goes off-topic: "Let's focus on pronunciation."`
+      : this.practiceMode === 'pronunciation-test' && this.testWord
+      ? `PRONUNCIATION TEST MODE - BE AN EXPERT PRONUNCIATION COACH:
+         
+         You are testing the word: "${this.testWord}"
+         
+         YOUR JOB AS AN EXPERT:
+         1. Ask the student to pronounce "${this.testWord}" clearly
+         2. Listen with the ear of a pronunciation expert
+         3. Identify EVERY issue, no matter how small:
+            - Wrong phonemes (e.g., 'th' pronounced as 's' or 'd')
+            - Vowel quality issues (e.g., 'a' in apple should be /æ/ not /a/)
+            - Consonant problems (e.g., not aspirating 'p' in 'apple')
+            - Stress placement errors
+            - Intonation issues
+         
+         GIVE SPECIFIC CORRECTIONS:
+         - "Your 'l' sound is too light - make it darker by pulling your tongue back"
+         - "The 'w' in world needs more lip rounding - pucker your lips more"
+         - "The stress is on the wrong syllable - emphasize the FIRST part"
+         
+         Score from 0-100:
+         - 90-100: Near-native, only tiny issues
+         - 70-89: Good, minor issues that don't affect understanding
+         - 50-69: Understandable but noticeable errors
+         - Below 50: Major issues affecting comprehension
+         
+         ALWAYS end with "Score: [number]/100"
+         
+         Be encouraging but HONEST - they need real feedback to improve!`
+      : '';
 
     const sessionConfig = {
-      type: 'session.create',
+      type: 'session.update',
       session: {
-        model: this.config.model,
-        voice: this.config.voice,
-        instructions: `You are an expert language tutor specialized in teaching English through conversational practice.
+        modalities: ['text', 'audio'],
+        instructions: `You are a friendly language tutor helping students practice English pronunciation.
           
           ${languageInstructions}
           
-          Current practice mode: ${this.practiceMode.toUpperCase()}
-          ${modeInstructions[this.practiceMode]}
+          Current practice mode: ${this.practiceMode}
+          ${wordsContext}
+          ${pronunciationInstructions}
           
-          ${this.practiceMode === 'pronunciation-test' ? '' : wordsContext}
-          
-          IMPORTANT BEHAVIORS:
-          1. START the conversation immediately with a friendly greeting in ${this.homeLanguage}
-          2. If words were uploaded, immediately start practicing - don't ask what to focus on
-          3. If no words uploaded, suggest adding words or start general practice
-          4. Be encouraging and patient - learning a language is challenging
-          5. Keep responses concise - this is a conversation, not a lecture
-          6. For pronunciation mode: Test ONE WORD AT A TIME - never present as a list
-          7. For vocabulary mode: Test understanding of each uploaded word with examples
-          8. For conversation mode: Create natural dialogue using all the uploaded words
-          
-          Remember: The uploaded words are the curriculum. Use them all. Don't ask what to practice if words are provided.`,
+          REMEMBER:
+          - Stay focused as a pronunciation teacher
+          - Use the move_to_next_word function after each word (2 attempts)
+          - Give specific pronunciation feedback
+          - Don't engage in off-topic conversation`,
+        voice: this.config.voice,
+        tools: this.practiceMode === 'pronunciation' ? [{
+          type: 'function',
+          name: 'move_to_next_word',
+          description: 'Move to the next word in the practice list after completing the current word',
+          parameters: {
+            type: 'object',
+            properties: {
+              current_word: {
+                type: 'string',
+                description: 'The word that was just practiced'
+              },
+              attempts_made: {
+                type: 'number',
+                description: 'Number of attempts made for this word'
+              }
+            },
+            required: ['current_word']
+          }
+        }] : [],
+        tool_choice: 'auto',
         input_audio_format: 'pcm16',
         output_audio_format: 'pcm16',
+        input_audio_transcription: {
+          model: 'whisper-1'
+        },
         turn_detection: {
           type: 'server_vad',
-          threshold: 0.5,
+          threshold: 0.7,  // Increased from 0.5 to reduce sensitivity
           prefix_padding_ms: 300,
-          silence_duration_ms: 200,  // Reduced for quicker interruption detection
-          vad_mode: 'aggressive'  // More sensitive to speech onset
+          silence_duration_ms: 500  // Increased from 200ms to require longer silence
         },
-        tools: [],  // No tools needed for conversation
-        tool_choice: 'none'
+        temperature: 0.8
       }
     };
 
@@ -231,39 +298,77 @@ export class RealtimeClient {
     // Send initial response request to make the tutor start talking
     setTimeout(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        let startInstructions;
+        const langReminder = this.homeLanguage.toLowerCase() !== 'english' 
+          ? `REMEMBER: You MUST speak in ${this.homeLanguage}! Greet in ${this.homeLanguage}, give instructions in ${this.homeLanguage}. Only the English words being practiced should be in English. ` 
+          : '';
         
-        if (this.practiceMode === 'pronunciation-test') {
-          // For pronunciation test, only mention the current word
-          startInstructions = `Greet the student warmly and ask them to pronounce the word: "${this.currentTestWord}". 
-                              Be natural and encouraging, like a real teacher would be.`;
-        } else if (this.practiceMode === 'pronunciation' && this.recentWords.length > 0) {
-          // For pronunciation practice, start with the first word only
-          startInstructions = `Start with a warm greeting, then ask the student to pronounce the word: "${this.recentWords[0]}". 
-                              Focus on this one word first. Be encouraging and provide helpful feedback.`;
-        } else if (this.recentWords.length > 0) {
-          startInstructions = `Start with a warm greeting, then immediately begin practicing these words: ${this.recentWords.join(', ')}. 
-                              Don't ask what to practice - jump right into using these words in ${this.practiceMode} mode.`;
-        } else {
-          startInstructions = `Start with a warm greeting and ask what words they'd like to practice today, or suggest they add some words to their vocabulary list.`;
+        let startInstructions = '';
+        if (this.recentWords.length >= 3) {
+          if (this.practiceMode === 'pronunciation') {
+            startInstructions = `${langReminder}YOU ARE A PRONUNCIATION TEACHER. You MUST use the move_to_next_word function.
+            
+            Say: "Hello! I'm your pronunciation teacher. Let's work on your English pronunciation. Can you say '${this.recentWords[0]}' for me?"
+            
+            CRITICAL SEQUENCE (YOU MUST FOLLOW):
+            1. Listen to their first attempt
+            2. Give SPECIFIC feedback (e.g., "The 'th' needs your tongue between your teeth")
+            3. Say "Try once more"
+            4. Listen to second attempt
+            5. Give final feedback
+            6. ⚠️ MANDATORY: Call move_to_next_word({"current_word": "${this.recentWords[0]}", "attempts_made": 2})
+            7. The function returns the next word - teach it the same way
+            
+            YOU MUST CALL THE FUNCTION. This is NOT optional.
+            If student goes off-topic: "Let's focus on pronunciation practice."`;
+          } else {
+            startInstructions = `${langReminder}Greet briefly, then immediately start practicing with "${this.recentWords[0]}". 
+            DO NOT mention other words.`;
+          }
         }
         
-        this.ws.send(JSON.stringify({
-          type: 'response.create',
-          response: {
-            modalities: ['text', 'audio'],
-            instructions: startInstructions
-          }
-        }));
+        if (startInstructions) {
+          this.ws.send(JSON.stringify({
+            type: 'response.create',
+            response: {
+              modalities: ['text', 'audio'],
+              instructions: startInstructions
+            }
+          }));
+        }
       }
     }, 500);
   }
 
   private handleMessage(data: any) {
+    // Log ALL events for debugging
+    if (data.type && !data.type.includes('audio')) {
+      console.log(`[EVENT] ${data.type}:`, data);
+    }
+    
     switch (data.type) {
       case 'session.created':
         this.sessionId = data.session_id;
         this.emit('session.created', data);
+        break;
+      
+      case 'response.function_call.started':
+        console.log('🔧 Function call STARTED:', data);
+        break;
+      
+      case 'response.function_call_arguments.started':
+        console.log('🔧 Function arguments STARTED:', data);
+        break;
+        
+      case 'response.function_call_arguments.delta':
+        console.log('🔧 Function arguments DELTA:', data);
+        break;
+      
+      case 'response.function_call_arguments.done':
+        // Handle function call for moving to next word
+        console.log('🔧 Function call DONE:', data);
+        if (data.name === 'move_to_next_word') {
+          this.handleMoveToNextWord(data);
+        }
         break;
       
       case 'response.audio.delta':
@@ -285,18 +390,26 @@ export class RealtimeClient {
         break;
       
       case 'input_audio_buffer.speech_started':
-        // User started speaking - this is an interruption if assistant is talking
+        console.log('Speech detected - user started speaking');
         this.handleUserInterruption();
         this.emit('user.speaking.start');
         break;
       
       case 'input_audio_buffer.speech_stopped':
+        console.log('Speech stopped - waiting for transcription');
         this.emit('user.speaking.stop');
         break;
       
       case 'conversation.item.created':
         if (data.item.type === 'message' && data.item.role === 'user') {
-          this.emit('user.transcript', data.item.content?.[0]?.transcript || '');
+          const transcript = data.item.content?.[0]?.transcript || '';
+          this.emit('user.transcript', transcript);
+          
+          // Just log attempts for debugging
+          if (this.practiceMode === 'pronunciation' && transcript) {
+            this.attemptCount++;
+            console.log(`User attempt ${this.attemptCount} for word: ${this.recentWords[this.currentWordIndex]}`);
+          }
         }
         break;
       
@@ -317,6 +430,216 @@ export class RealtimeClient {
       default:
         this.emit('message', data);
     }
+  }
+
+  private progressToNextWord() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.log('Cannot progress - WebSocket not open');
+      return;
+    }
+    
+    console.log(`Progressing from word ${this.currentWordIndex} (${this.recentWords[this.currentWordIndex]}) to next word`);
+    
+    // Reset attempt counter and move to next word
+    this.attemptCount = 0;
+    this.currentWordIndex++;
+    
+    if (this.currentWordIndex >= this.recentWords.length) {
+      console.log('All words completed!');
+      // All words completed
+      this.ws.send(JSON.stringify({
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'system',
+          content: [{
+            type: 'text',
+            text: `All words completed! Say: "Excellent work! You've practiced all the words. Your pronunciation is improving!"`
+          }]
+        }
+      }));
+    } else {
+      // Send instruction for next word
+      const nextWord = this.recentWords[this.currentWordIndex];
+      console.log(`Moving to word ${this.currentWordIndex + 1}/${this.recentWords.length}: "${nextWord}"`);
+      
+      this.ws.send(JSON.stringify({
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'system',
+          content: [{
+            type: 'text',
+            text: `NEXT WORD: "${nextWord}"
+            
+            You are still the pronunciation teacher. 
+            Say EXACTLY: "Now let's work on '${nextWord}'. Can you pronounce it for me?"
+            
+            Then follow the same teaching protocol:
+            1. Listen to their pronunciation
+            2. Give specific feedback on sounds, stress, etc.
+            3. Ask them to try once more
+            4. Give final feedback
+            5. Say "Good effort with '${nextWord}'"
+            
+            STAY FOCUSED on pronunciation teaching only.`
+          }]
+        }
+      }));
+    }
+    
+    // Trigger response
+    setTimeout(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({
+          type: 'response.create',
+          response: {
+            modalities: ['text', 'audio']
+          }
+        }));
+      }
+    }, 100);
+  }
+
+  private handleMoveToNextWord(data: any) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.log('Cannot move to next word - WebSocket not open');
+      return;
+    }
+    
+    console.log('📝 Function call data:', data);
+    console.log('📝 Current word index:', this.currentWordIndex);
+    console.log('📝 Recent words:', this.recentWords);
+    console.log(`📝 Moving from word: ${this.recentWords[this.currentWordIndex]}`);
+    
+    // Parse arguments if they're a string
+    let args = {};
+    if (data.arguments) {
+      try {
+        args = typeof data.arguments === 'string' ? JSON.parse(data.arguments) : data.arguments;
+        console.log('📝 Parsed arguments:', args);
+      } catch (e) {
+        console.error('Failed to parse arguments:', e);
+      }
+    }
+    
+    // Move to next word
+    this.currentWordIndex++;
+    this.attemptCount = 0;
+    
+    let responseOutput;
+    if (this.currentWordIndex >= this.recentWords.length) {
+      // All words completed
+      console.log('All words completed!');
+      responseOutput = {
+        has_next_word: false,
+        message: "All words completed! Great job on your pronunciation practice!",
+        next_word: null
+      };
+    } else {
+      // Get next word
+      const nextWord = this.recentWords[this.currentWordIndex];
+      console.log(`Next word is: ${nextWord} (${this.currentWordIndex + 1}/${this.recentWords.length})`);
+      responseOutput = {
+        has_next_word: true,
+        next_word: nextWord,
+        message: `Now let's practice: ${nextWord}`
+      };
+    }
+    
+    // Send function call output
+    this.ws.send(JSON.stringify({
+      type: 'conversation.item.create',
+      item: {
+        type: 'function_call_output',
+        call_id: data.call_id,
+        output: JSON.stringify(responseOutput)
+      }
+    }));
+    
+    // Continue the response
+    setTimeout(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({
+          type: 'response.create',
+          response: {
+            modalities: ['text', 'audio']
+          }
+        }));
+      }
+    }, 100);
+  }
+
+  private moveToNextWord() {
+    this.attemptCount = 0;
+    this.currentWordIndex++;
+    
+    if (this.currentWordIndex >= this.recentWords.length) {
+      // All words completed
+      this.sendCompletionMessage();
+    } else {
+      // Move to next word
+      this.sendNextWordInstruction();
+    }
+  }
+
+  private sendNextWordInstruction() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    
+    const nextWord = this.recentWords[this.currentWordIndex];
+    const langInstruction = this.homeLanguage.toLowerCase() !== 'english'
+      ? `Speaking in ${this.homeLanguage}, `
+      : '';
+    
+    this.ws.send(JSON.stringify({
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'system',
+        content: [{
+          type: 'text',
+          text: `${langInstruction}Transition naturally to the next word: "${nextWord}". 
+              Say something like: "Good effort! Now let's try '${nextWord}'." 
+              Remember to be CRITICAL - listen for even small pronunciation issues and explain HOW to fix them with specific mouth/tongue positioning guidance.`
+        }]
+      }
+    }));
+    
+    // Trigger response
+    this.ws.send(JSON.stringify({
+      type: 'response.create',
+      response: {
+        modalities: ['text', 'audio']
+      }
+    }));
+  }
+
+  private sendCompletionMessage() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    
+    const completionMsg = this.homeLanguage.toLowerCase() !== 'english'
+      ? `Great job! You've practiced all the words. To learn more words, please go to FlashAcademy and complete some lessons. (Remember: say "FlashAcademy" in English, rest in ${this.homeLanguage})`
+      : 'Great job! You\'ve practiced all the words. To learn more words, please go to FlashAcademy and complete some lessons.';
+    
+    this.ws.send(JSON.stringify({
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'system',
+        content: [{
+          type: 'text',
+          text: completionMsg
+        }]
+      }
+    }));
+    
+    // Trigger response
+    this.ws.send(JSON.stringify({
+      type: 'response.create',
+      response: {
+        modalities: ['text', 'audio']
+      }
+    }));
   }
 
   private setupAudioCapture() {
@@ -442,13 +765,6 @@ export class RealtimeClient {
     
     // Clear the audio queue
     this.clearAudioQueue();
-    
-    // Send cancel message to stop the assistant's current response
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({
-        type: 'response.cancel'
-      }));
-    }
   }
 
   private clearAudioQueue() {
@@ -495,22 +811,72 @@ export class RealtimeClient {
     }
   }
 
+  setTestWord(word: string) {
+    this.testWord = word;
+  }
+
   setPracticeMode(mode: 'pronunciation' | 'vocabulary' | 'conversation' | 'pronunciation-test') {
-    // Store the practice mode
+    // Store the practice mode and reset counters
     this.practiceMode = mode;
+    this.currentWordIndex = 0;
+    this.attemptCount = 0;
 
     // If already connected, update the mode
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      const modeInstructions = {
-        pronunciation: `Switch to PRONUNCIATION mode. Focus on helping with pronunciation, sounds, rhythm, and intonation. 
-          Practice words in context. Give specific feedback on pronunciation issues.`,
-        vocabulary: `Switch to VOCABULARY mode. Test understanding of word meanings. 
-          Use words in different contexts. Create scenarios for natural usage.`,
-        conversation: `Switch to CONVERSATION mode. Engage in natural, flowing conversation. 
-          Incorporate learned words naturally. Prioritize fluency over perfect accuracy.`,
-        'pronunciation-test': `Switch to PRONUNCIATION TEST mode. Be METICULOUS in evaluating pronunciation.
-          Listen carefully and provide numerical scores with detailed feedback.`
-      };
+      let modeInstructions = '';
+      
+      if (mode === 'pronunciation' && this.recentWords.length > 0) {
+        modeInstructions = `Switch to PRONUNCIATION mode. 
+          Practice these exact words: ${this.recentWords.join(', ')}.
+          Start with "${this.recentWords[0]}".
+          Give 2 attempts per word, then move to the next.
+          Focus on pronunciation feedback.`;
+      } else if (mode === 'pronunciation-test' && this.testWord) {
+        modeInstructions = `CRITICAL: You are now a STRICT PRONUNCIATION EVALUATOR for the word "${this.testWord}".
+          
+          YOUR ROLE:
+          - Be a helpful but CRITICAL teacher who wants the student to improve
+          - Listen VERY carefully to how they pronounce "${this.testWord}"
+          - Evaluate their pronunciation honestly and provide a score from 0-100
+          
+          EVALUATION CRITERIA:
+          1. Individual sound accuracy (40%): Are all phonemes pronounced correctly?
+          2. Word stress (20%): Is the stress on the correct syllable?
+          3. Clarity (20%): Is the word clear and understandable?
+          4. Intonation/rhythm (20%): Does it sound natural?
+          
+          SCORING GUIDELINES:
+          - 90-100: Excellent, near-native pronunciation
+          - 70-89: Good, minor issues that don't affect understanding
+          - 50-69: Fair, noticeable errors but still understandable
+          - 30-49: Poor, difficult to understand, major errors
+          - 0-29: Very poor, incomprehensible or completely wrong
+          
+          REQUIRED RESPONSE FORMAT:
+          1. First, acknowledge what you heard
+          2. Point out SPECIFIC pronunciation issues (be honest but encouraging)
+          3. Give constructive feedback on how to improve
+          4. End with "Score: [number]/100" on a new line
+          
+          Example responses:
+          - If perfect: "Excellent! Your pronunciation of '${this.testWord}' was clear and accurate. Score: 95/100"
+          - If good: "Good attempt! The word was mostly clear, but watch the [specific sound]. Try to [specific tip]. Score: 75/100"
+          - If poor: "I heard something like '[what you heard]'. Let's work on [specific issues]. Remember to [specific tips]. Score: 45/100"
+          
+          BE HONEST - students need real feedback to improve, not just encouragement!`;
+      } else {
+        const generalInstructions = {
+          pronunciation: `Switch to PRONUNCIATION mode. Focus on helping with pronunciation, sounds, rhythm, and intonation. 
+            Practice words in context. Give specific feedback on pronunciation issues.`,
+          vocabulary: `Switch to VOCABULARY mode. Test understanding of word meanings. 
+            Use words in different contexts. Create scenarios for natural usage.`,
+          conversation: `Switch to CONVERSATION mode. Engage in natural, flowing conversation. 
+            Incorporate learned words naturally. Prioritize fluency over perfect accuracy.`,
+          'pronunciation-test': `Switch to PRONUNCIATION TEST mode. Be METICULOUS in evaluating pronunciation.
+            Listen carefully and provide numerical scores with detailed feedback.`
+        };
+        modeInstructions = generalInstructions[mode];
+      }
 
       this.ws.send(JSON.stringify({
         type: 'conversation.item.create',
@@ -519,15 +885,24 @@ export class RealtimeClient {
           role: 'system',
           content: [{
             type: 'text',
-            text: modeInstructions[mode]
+            text: modeInstructions
           }]
         }
       }));
-    }
-  }
 
-  setTestWord(word: string) {
-    this.currentTestWord = word;
+      // If switching to pronunciation mode, start with first word
+      if (mode === 'pronunciation' && this.recentWords.length > 0) {
+        setTimeout(() => {
+          this.ws?.send(JSON.stringify({
+            type: 'response.create',
+            response: {
+              modalities: ['text', 'audio'],
+              instructions: `Now ask the student to pronounce the word "${this.recentWords[0]}".`
+            }
+          }));
+        }, 100);
+      }
+    }
   }
 
   disconnect() {
