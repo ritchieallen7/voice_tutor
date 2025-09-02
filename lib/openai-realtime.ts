@@ -21,28 +21,31 @@ export class RealtimeClient {
   private mediaStream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
   private audioProcessor: ScriptProcessorNode | null = null;
-  private listeners: Map<string, Function[]> = new Map();
+  private listeners: Map<string, Array<(...args: any[]) => void>> = new Map();
   private playbackQueue: AudioBuffer[] = [];
   private isPlaying: boolean = false;
   private nextPlaybackTime: number = 0;
   private currentAudioSource: AudioBufferSourceNode | null = null;
+  private reconnectAttempts: number = 0;
+  private maxReconnectAttempts: number = 3;
+  private reconnectDelay: number = 1000;
 
   constructor(config: RealtimeConfig = {}) {
     this.config = {
-      model: 'gpt-4o-realtime-preview-2024-12-17',
+      model: 'gpt-realtime', // Using the GA model for better performance
       voice: 'alloy',
       ...config
     };
   }
 
-  on(event: string, callback: Function) {
+  on(event: string, callback: (...args: any[]) => void) {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, []);
     }
     this.listeners.get(event)?.push(callback);
   }
 
-  emit(event: string, ...args: any[]) {
+  emit(event: string, ...args: unknown[]) {
     const callbacks = this.listeners.get(event) || [];
     callbacks.forEach(callback => callback(...args));
   }
@@ -55,7 +58,8 @@ export class RealtimeClient {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
-          sampleRate: 24000
+          sampleRate: 24000,
+          channelCount: 1 // Mono audio for better compatibility
         } 
       });
 
@@ -82,12 +86,21 @@ export class RealtimeClient {
       this.ws.onerror = (error) => {
         console.error('WebSocket error:', error);
         this.emit('error', error);
+        // Attempt reconnection on error
+        if (this.reconnectAttempts < this.maxReconnectAttempts) {
+          this.attemptReconnect();
+        }
       };
 
-      this.ws.onclose = () => {
-        console.log('WebSocket disconnected');
+      this.ws.onclose = (event) => {
+        console.log('WebSocket disconnected', event.code, event.reason);
         this.isConnected = false;
         this.emit('disconnected');
+        
+        // Attempt reconnection if not a normal closure
+        if (event.code !== 1000 && this.reconnectAttempts < this.maxReconnectAttempts) {
+          this.attemptReconnect();
+        }
       };
 
     } catch (error) {
@@ -103,6 +116,9 @@ export class RealtimeClient {
   private currentWordIndex: number = 0;
   private attemptCount: number = 0;
   private testWord: string = '';  // For pronunciation test mode
+  private wordProgressionEnabled: boolean = false;
+  private waitingForNextWord: boolean = false;
+  private lastBlockedTime: number = 0;
 
   private createSession() {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
@@ -111,8 +127,8 @@ export class RealtimeClient {
     this.currentWordIndex = 0;
     this.attemptCount = 0;
     
-    // Define the function for getting next word
-    const getNextWordFunction = {
+    // Define the function for getting next word (kept for reference)
+    /* const getNextWordFunction = {
       type: 'function',
       name: 'get_next_word',
       description: 'Get the next word to practice when ready to move on',
@@ -130,7 +146,7 @@ export class RealtimeClient {
         },
         required: ['current_word', 'feedback_given']
       }
-    };
+    }; */
 
     // Build language-aware instructions
     const languageInstructions = this.homeLanguage.toLowerCase() !== 'english' 
@@ -168,9 +184,9 @@ export class RealtimeClient {
           },
           turn_detection: {
             type: 'server_vad',
-            threshold: 0.7,  // Increased to reduce false triggers
-            prefix_padding_ms: 300,
-            silence_duration_ms: 500  // Increased to require longer silence
+            threshold: 0.8,  // Optimized for clear pronunciation
+            prefix_padding_ms: 500,
+            silence_duration_ms: 800  // Natural speech timing
           },
           temperature: 0.8
         }
@@ -184,100 +200,103 @@ export class RealtimeClient {
       : '';
 
     const pronunciationInstructions = this.practiceMode === 'pronunciation' 
-      ? `YOU ARE A STRICT PRONUNCIATION TEACHER. Your ONLY job is to teach pronunciation.
+      ? `YOU ARE A PRONUNCIATION COACH. You MUST practice ONLY these words in this EXACT order:
+         [${this.recentWords.map((w, i) => `${i+1}. "${w}"`).join(', ')}]
          
-         CRITICAL: You have a function 'move_to_next_word' that you MUST CALL after each word.
+         CURRENT WORD #${this.currentWordIndex + 1}: "${this.recentWords[this.currentWordIndex]}"
          
-         CURRENT WORD TO TEACH: "${this.recentWords[this.currentWordIndex]}"
-         
-         YOUR EXACT PROTOCOL (FOLLOW PRECISELY):
+         YOUR TEACHING PROTOCOL:
          1. Ask: "Can you pronounce '${this.recentWords[this.currentWordIndex]}' for me?"
-         2. Listen to their first attempt
-         3. Give SPECIFIC feedback (e.g., "The 'th' needs your tongue between your teeth")
-         4. Say: "Let's try once more"
+         2. Listen carefully to their first attempt
+         3. PROVIDE DETAILED FEEDBACK:
+            - Identify any mispronounced sounds
+            - Explain HOW to correct them (tongue position, mouth shape, etc.)
+            - Example: "The 'sh' in fish needs your tongue pulled back"
+            - Be specific: "Your 'i' sound was too long, make it shorter"
+         4. Say: "Good effort! Let's try '${this.recentWords[this.currentWordIndex]}' once more, focusing on [specific issue]"
          5. Listen to their second attempt
-         6. Give final feedback
-         7. ⚠️ CRITICAL: You MUST call the function move_to_next_word with:
-            {
-              "current_word": "${this.recentWords[this.currentWordIndex]}",
-              "attempts_made": 2
-            }
+         6. GIVE CONSTRUCTIVE FEEDBACK:
+            - Note improvements: "Much better on the 'sh' sound!"
+            - Point out remaining issues if any
+            - Always be encouraging but honest
          
-         The function will return the next word. If there is one, teach it the same way.
-         If no more words, the function will tell you the session is complete.
+         AFTER 2 ATTEMPTS: Stop and wait. The system will automatically give you the next word.
          
-         NEVER skip calling the function. ALWAYS call it after 2 attempts.
-         
-         If student goes off-topic: "Let's focus on pronunciation."`
+         CRITICAL RULES:
+         - ONLY practice word #${this.currentWordIndex + 1}: "${this.recentWords[this.currentWordIndex]}"
+         - NEVER mention or suggest any other words
+         - After 2 attempts, STOP and WAIT for the next word
+         - If student says wrong word: "Let's focus on '${this.recentWords[this.currentWordIndex]}' please."`
       : this.practiceMode === 'pronunciation-test' && this.testWord
-      ? `PRONUNCIATION TEST MODE - BE AN EXPERT PRONUNCIATION COACH:
+      ? `PRONUNCIATION TEST MODE - EXPERT EVALUATION:
          
-         You are testing the word: "${this.testWord}"
+         Testing word: "${this.testWord}"
          
-         YOUR JOB AS AN EXPERT:
-         1. Ask the student to pronounce "${this.testWord}" clearly
-         2. Listen with the ear of a pronunciation expert
-         3. Identify EVERY issue, no matter how small:
-            - Wrong phonemes (e.g., 'th' pronounced as 's' or 'd')
-            - Vowel quality issues (e.g., 'a' in apple should be /æ/ not /a/)
-            - Consonant problems (e.g., not aspirating 'p' in 'apple')
-            - Stress placement errors
-            - Intonation issues
+         EVALUATION PROTOCOL:
+         1. Say: "Please pronounce the word '${this.testWord}' as clearly as you can."
+         2. Listen like a pronunciation expert for:
+            - Individual phoneme accuracy (40% weight)
+            - Word stress placement (20% weight)
+            - Clarity and intelligibility (20% weight)
+            - Natural rhythm/flow (20% weight)
          
-         GIVE SPECIFIC CORRECTIONS:
-         - "Your 'l' sound is too light - make it darker by pulling your tongue back"
-         - "The 'w' in world needs more lip rounding - pucker your lips more"
-         - "The stress is on the wrong syllable - emphasize the FIRST part"
+         SPECIFIC FEEDBACK EXAMPLES:
+         - Phonemes: "The 'th' sound needs your tongue between teeth, not behind them"
+         - Vowels: "The 'a' in '${this.testWord}' should be more open - drop your jaw"
+         - Consonants: "Add more aspiration to the 'p' - release more air"
+         - Stress: "Put emphasis on the [first/second] syllable"
          
-         Score from 0-100:
-         - 90-100: Near-native, only tiny issues
-         - 70-89: Good, minor issues that don't affect understanding
-         - 50-69: Understandable but noticeable errors
-         - Below 50: Major issues affecting comprehension
+         SCORING GUIDE:
+         - 90-100: Excellent, near-native pronunciation
+         - 75-89: Good, minor issues not affecting comprehension
+         - 60-74: Fair, noticeable errors but understandable
+         - 40-59: Poor, significant issues affecting clarity
+         - Below 40: Needs major improvement
          
-         ALWAYS end with "Score: [number]/100"
+         RESPONSE FORMAT:
+         1. "I heard: [what you heard]"
+         2. Specific issues: [list problems]
+         3. How to improve: [concrete tips]
+         4. "Score: [number]/100"
          
-         Be encouraging but HONEST - they need real feedback to improve!`
+         Be HONEST but encouraging - accurate feedback helps improvement!`
       : '';
 
     const sessionConfig = {
       type: 'session.update',
       session: {
         modalities: ['text', 'audio'],
-        instructions: `You are a friendly language tutor helping students practice English pronunciation.
+        instructions: `You are an expert pronunciation tutor. Your job is to help students improve their English pronunciation through detailed feedback and correction.
           
           ${languageInstructions}
           
           Current practice mode: ${this.practiceMode}
-          ${wordsContext}
+          
+          MANDATORY WORD LIST (ONLY THESE WORDS, IN THIS EXACT ORDER):
+          ${this.recentWords.map((w, i) => `${i+1}. "${w}"`).join('\n          ')}
+          
+          CRITICAL: You can ONLY practice the ${this.recentWords.length} words listed above. NEVER suggest or use any other words.
+          
+          YOUR ROLE AS A TUTOR:
+          - Listen carefully to each pronunciation attempt
+          - Identify specific pronunciation errors
+          - Explain HOW to fix errors (tongue position, lip shape, breath control)
+          - Give examples and demonstrations
+          - Be patient, encouraging, but honest about mistakes
+          - Celebrate improvements
+          
           ${pronunciationInstructions}
           
-          REMEMBER:
-          - Stay focused as a pronunciation teacher
-          - Use the move_to_next_word function after each word (2 attempts)
-          - Give specific pronunciation feedback
-          - Don't engage in off-topic conversation`,
+          CRITICAL RULES:
+          - You MUST practice ONLY the words from the numbered list above
+          - NEVER make up or suggest any words not in the list
+          - After 2 attempts at each word, STOP and WAIT
+          - The system will tell you when to move to the next word
+          - Give specific pronunciation feedback for each word
+          - Stay focused on pronunciation practice`,
         voice: this.config.voice,
-        tools: this.practiceMode === 'pronunciation' ? [{
-          type: 'function',
-          name: 'move_to_next_word',
-          description: 'Move to the next word in the practice list after completing the current word',
-          parameters: {
-            type: 'object',
-            properties: {
-              current_word: {
-                type: 'string',
-                description: 'The word that was just practiced'
-              },
-              attempts_made: {
-                type: 'number',
-                description: 'Number of attempts made for this word'
-              }
-            },
-            required: ['current_word']
-          }
-        }] : [],
-        tool_choice: 'auto',
+        tools: [], // Removed function calling - using direct word progression instead
+        tool_choice: 'none',
         input_audio_format: 'pcm16',
         output_audio_format: 'pcm16',
         input_audio_transcription: {
@@ -285,9 +304,9 @@ export class RealtimeClient {
         },
         turn_detection: {
           type: 'server_vad',
-          threshold: 0.7,  // Increased from 0.5 to reduce sensitivity
-          prefix_padding_ms: 300,
-          silence_duration_ms: 500  // Increased from 200ms to require longer silence
+          threshold: 0.8,  // Optimized for pronunciation practice
+          prefix_padding_ms: 500,  // Capture full utterance
+          silence_duration_ms: 800  // Allow natural speech pauses
         },
         temperature: 0.8
       }
@@ -305,21 +324,25 @@ export class RealtimeClient {
         let startInstructions = '';
         if (this.recentWords.length >= 3) {
           if (this.practiceMode === 'pronunciation') {
-            startInstructions = `${langReminder}YOU ARE A PRONUNCIATION TEACHER. You MUST use the move_to_next_word function.
+            startInstructions = `${langReminder}YOU ARE A PRONUNCIATION TEACHER. 
             
-            Say: "Hello! I'm your pronunciation teacher. Let's work on your English pronunciation. Can you say '${this.recentWords[0]}' for me?"
+            YOUR COMPLETE WORD LIST (${this.recentWords.length} words total):
+            ${this.recentWords.map((w, i) => `Word #${i+1}: "${w}"`).join('\n            ')}
             
-            CRITICAL SEQUENCE (YOU MUST FOLLOW):
-            1. Listen to their first attempt
-            2. Give SPECIFIC feedback (e.g., "The 'th' needs your tongue between your teeth")
-            3. Say "Try once more"
+            CRITICAL: These are the ONLY ${this.recentWords.length} words you can use. NEVER use any other words like "beach", "thought", "world", etc.
+            
+            Start by saying: "Hello! I'm your pronunciation tutor. Today we'll practice these ${this.recentWords.length} specific words: ${this.recentWords.join(', ')}. I'll listen carefully to your pronunciation and help you improve. Let's start with word #1: '${this.recentWords[0]}'. Can you pronounce it for me?"
+            
+            CRITICAL RULES:
+            1. Listen to their attempt at "${this.recentWords[0]}"
+            2. Give specific feedback
+            3. Say "Try '${this.recentWords[0]}' once more"
             4. Listen to second attempt
             5. Give final feedback
-            6. ⚠️ MANDATORY: Call move_to_next_word({"current_word": "${this.recentWords[0]}", "attempts_made": 2})
-            7. The function returns the next word - teach it the same way
+            6. STOP and WAIT - the system will give you the next word
             
-            YOU MUST CALL THE FUNCTION. This is NOT optional.
-            If student goes off-topic: "Let's focus on pronunciation practice."`;
+            NEVER introduce words not in the numbered list above.
+            After 2 attempts, WAIT for the system to continue.`;
           } else {
             startInstructions = `${langReminder}Greet briefly, then immediately start practicing with "${this.recentWords[0]}". 
             DO NOT mention other words.`;
@@ -366,6 +389,8 @@ export class RealtimeClient {
       case 'response.function_call_arguments.done':
         // Handle function call for moving to next word
         console.log('🔧 Function call DONE:', data);
+        console.log('🔧 Function name:', data.name);
+        console.log('🔧 Current words list:', this.recentWords);
         if (data.name === 'move_to_next_word') {
           this.handleMoveToNextWord(data);
         }
@@ -379,12 +404,20 @@ export class RealtimeClient {
         break;
       
       case 'response.audio.transcript':
+        // Check full transcript for wrong words
+        if (this.wordProgressionEnabled && this.recentWords.length > 0) {
+          this.checkAndBlockWrongWords(data.transcript);
+        }
         this.emit('assistant.transcript', data.transcript);
         break;
       
       case 'response.audio_transcript.delta':
         // Handle incremental transcript updates
         if (data.delta) {
+          // Monitor for wrong words in pronunciation mode
+          if (this.wordProgressionEnabled && this.recentWords.length > 0) {
+            this.checkAndBlockWrongWords(data.delta);
+          }
           this.emit('assistant.transcript.delta', data.delta);
         }
         break;
@@ -405,10 +438,17 @@ export class RealtimeClient {
           const transcript = data.item.content?.[0]?.transcript || '';
           this.emit('user.transcript', transcript);
           
-          // Just log attempts for debugging
-          if (this.practiceMode === 'pronunciation' && transcript) {
+          // Track attempts and auto-progress after 2
+          if (this.wordProgressionEnabled && transcript && this.recentWords.length > 0) {
             this.attemptCount++;
             console.log(`User attempt ${this.attemptCount} for word: ${this.recentWords[this.currentWordIndex]}`);
+            
+            // After 2 attempts, automatically move to next word
+            if (this.attemptCount >= 2 && !this.waitingForNextWord) {
+              this.waitingForNextWord = true;
+              console.log(`✅ Completed 2 attempts for "${this.recentWords[this.currentWordIndex]}", moving to next word...`);
+              setTimeout(() => this.forceNextWord(), 3000); // Give 3 seconds for feedback
+            }
           }
         }
         break;
@@ -424,7 +464,15 @@ export class RealtimeClient {
         break;
       
       case 'error':
+        console.error('Realtime API error:', data.error);
         this.emit('error', data.error);
+        
+        // Handle specific error types
+        if (data.error?.type === 'invalid_request_error') {
+          console.error('Invalid request - check API configuration');
+        } else if (data.error?.type === 'server_error') {
+          console.error('Server error - may need to retry');
+        }
         break;
       
       default:
@@ -501,7 +549,162 @@ export class RealtimeClient {
     }, 100);
   }
 
-  private handleMoveToNextWord(data: any) {
+  private checkAndBlockWrongWords(text: string) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.wordProgressionEnabled || this.recentWords.length === 0) return;
+    
+    const currentWord = this.recentWords[this.currentWordIndex]?.toLowerCase() || '';
+    const textLower = text.toLowerCase();
+    
+    // List of common wrong words the AI might use
+    const wrongWords = ['beach', 'thought', 'world', 'through', 'light', 'water', 'tree', 'house', 'book', 'phone'];
+    
+    // Check if AI is trying to use a wrong word for practice
+    for (const wrongWord of wrongWords) {
+      if (textLower.includes(wrongWord) && !textLower.includes(currentWord)) {
+        console.log(`🚫 BLOCKED: AI tried to use "${wrongWord}" instead of "${currentWord}"`);
+        
+        // Prevent rapid blocking
+        const now = Date.now();
+        if (now - this.lastBlockedTime < 1000) return;
+        this.lastBlockedTime = now;
+        
+        // Cancel the current response
+        this.ws.send(JSON.stringify({
+          type: 'response.cancel'
+        }));
+        
+        // Send correction
+        setTimeout(() => {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({
+              type: 'conversation.item.create',
+              item: {
+                type: 'message',
+                role: 'system',
+                content: [{
+                  type: 'text',
+                  text: `STOP! You tried to use "${wrongWord}" but you MUST use "${this.recentWords[this.currentWordIndex]}". The current word is #${this.currentWordIndex + 1}: "${this.recentWords[this.currentWordIndex]}". Say: "Let's practice '${this.recentWords[this.currentWordIndex]}'. Can you pronounce it?"`
+                }]
+              }
+            }));
+            
+            // Force correct response
+            this.ws.send(JSON.stringify({
+              type: 'response.create',
+              response: {
+                modalities: ['text', 'audio']
+              }
+            }));
+          }
+        }, 100);
+        
+        return;
+      }
+    }
+    
+    // Also check if AI mentions a word that's in our list but wrong position
+    for (let i = 0; i < this.recentWords.length; i++) {
+      if (i !== this.currentWordIndex) {
+        const otherWord = this.recentWords[i].toLowerCase();
+        if (textLower.includes(otherWord) && textLower.includes('practice')) {
+          console.log(`🚫 BLOCKED: AI tried to skip to "${this.recentWords[i]}" (word #${i+1})`);
+          
+          // Cancel and correct
+          this.ws.send(JSON.stringify({
+            type: 'response.cancel'
+          }));
+          
+          setTimeout(() => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+              this.ws.send(JSON.stringify({
+                type: 'conversation.item.create',
+                item: {
+                  type: 'message',
+                  role: 'system',
+                  content: [{
+                    type: 'text',
+                    text: `STOP! Stay on word #${this.currentWordIndex + 1}: "${this.recentWords[this.currentWordIndex]}". Do not skip ahead. Say: "Let's focus on '${this.recentWords[this.currentWordIndex]}' first."`
+                  }]
+                }
+              }));
+              
+              this.ws.send(JSON.stringify({
+                type: 'response.create',
+                response: {
+                  modalities: ['text', 'audio']
+                }
+              }));
+            }
+          }, 100);
+          
+          return;
+        }
+      }
+    }
+  }
+  
+  private forceNextWord() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.wordProgressionEnabled) return;
+    
+    // Reset for next word
+    this.attemptCount = 0;
+    this.currentWordIndex++;
+    this.waitingForNextWord = false;
+    
+    if (this.currentWordIndex >= this.recentWords.length) {
+      // All words completed
+      console.log('✅ All words completed!');
+      this.ws.send(JSON.stringify({
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'system',
+          content: [{
+            type: 'text',
+            text: `All words completed! Say: "Excellent work! You've practiced all the words. Great job!"`
+          }]
+        }
+      }));
+    } else {
+      // Force next word
+      const nextWord = this.recentWords[this.currentWordIndex];
+      console.log(`🎯 FORCING word #${this.currentWordIndex + 1}: "${nextWord}"`);
+      
+      // Clear any pending responses
+      this.ws.send(JSON.stringify({
+        type: 'response.cancel'
+      }));
+      
+      // Add system message with next word
+      this.ws.send(JSON.stringify({
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'system',
+          content: [{
+            type: 'text',
+            text: `Move to word #${this.currentWordIndex + 1} which is "${nextWord}". Say something like: "Good work on '${this.recentWords[this.currentWordIndex - 1]}'! Now let's practice word #${this.currentWordIndex + 1}: '${nextWord}'. Can you pronounce it for me?" Remember to listen carefully and provide detailed pronunciation feedback.`
+          }]
+        }
+      }));
+      
+      // Trigger response
+      setTimeout(() => {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({
+            type: 'response.create',
+            response: {
+              modalities: ['text', 'audio']
+            }
+          }));
+        }
+      }, 100);
+    }
+  }
+  
+  private handleMoveToNextWord(data: { call_id: string; arguments?: string | Record<string, unknown> }) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       console.log('Cannot move to next word - WebSocket not open');
       return;
@@ -532,22 +735,29 @@ export class RealtimeClient {
       // All words completed
       console.log('All words completed!');
       responseOutput = {
-        has_next_word: false,
-        message: "All words completed! Great job on your pronunciation practice!",
-        next_word: null
+        status: 'completed',
+        next_word: null,
+        exact_phrase_to_say: "Excellent work! You've completed all the words in today's practice session. Great job on your pronunciation!",
+        critical_instruction: "Practice session complete. Say the exact_phrase_to_say to congratulate the student."
       };
     } else {
       // Get next word
       const nextWord = this.recentWords[this.currentWordIndex];
       console.log(`Next word is: ${nextWord} (${this.currentWordIndex + 1}/${this.recentWords.length})`);
+      // Return a very explicit instruction that the AI must follow
       responseOutput = {
-        has_next_word: true,
+        status: 'continue',
         next_word: nextWord,
-        message: `Now let's practice: ${nextWord}`
+        word_number: this.currentWordIndex + 1,
+        total_words: this.recentWords.length,
+        exact_phrase_to_say: `Great! Now let's practice word #${this.currentWordIndex + 1}: '${nextWord}'. Can you pronounce it for me?`,
+        critical_instruction: `You MUST say the exact_phrase_to_say above. The word is "${nextWord}" from position ${this.currentWordIndex + 1} in the list.`
       };
     }
     
-    // Send function call output
+    // Send function call output - OpenAI will automatically continue the response
+    console.log('📤 Sending function output:', responseOutput);
+    
     this.ws.send(JSON.stringify({
       type: 'conversation.item.create',
       item: {
@@ -557,17 +767,21 @@ export class RealtimeClient {
       }
     }));
     
-    // Continue the response
-    setTimeout(() => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({
-          type: 'response.create',
-          response: {
-            modalities: ['text', 'audio']
-          }
-        }));
-      }
-    }, 100);
+    // Add a response.create with very strict instructions as a failsafe
+    if (responseOutput.status === 'continue' && responseOutput.next_word) {
+      setTimeout(() => {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          console.log(`🎯 Forcing response for word: ${responseOutput.next_word}`);
+          this.ws.send(JSON.stringify({
+            type: 'response.create',
+            response: {
+              modalities: ['text', 'audio'],
+              instructions: `The function returned word #${responseOutput.word_number}: "${responseOutput.next_word}". You MUST say EXACTLY: "${responseOutput.exact_phrase_to_say}" - DO NOT say any other word. The word is "${responseOutput.next_word}" NOT any other word.`
+            }
+          }));
+        }
+      }, 100);
+    }
   }
 
   private moveToNextWord() {
@@ -676,7 +890,10 @@ export class RealtimeClient {
   }
 
   private sendAudioChunk(audioData: ArrayBuffer) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      // Silently drop audio if not connected
+      return;
+    }
 
     const base64Audio = btoa(String.fromCharCode(...new Uint8Array(audioData)));
     
@@ -687,7 +904,10 @@ export class RealtimeClient {
   }
 
   private async playAudioChunk(base64Audio: string) {
-    if (!this.audioContext) return;
+    if (!this.audioContext) {
+      console.warn('AudioContext not initialized');
+      return;
+    }
 
     try {
       // Decode base64 to binary
@@ -758,7 +978,7 @@ export class RealtimeClient {
       try {
         this.currentAudioSource.stop();
         this.currentAudioSource = null;
-      } catch (e) {
+      } catch {
         // Ignore if already stopped
       }
     }
@@ -775,16 +995,19 @@ export class RealtimeClient {
       try {
         this.currentAudioSource.stop();
         this.currentAudioSource = null;
-      } catch (e) {
+      } catch {
         // Ignore if already stopped
       }
     }
   }
 
   updateContext(words: WordEntry[], homeLanguage: string) {
-    // Store context for session creation
-    this.recentWords = words.slice(-10).map(w => w.word);
+    // Store context for session creation - use words as passed, already sorted/filtered
+    this.recentWords = words.map(w => w.word);
     this.homeLanguage = homeLanguage;
+    
+    console.log('📚 Words set for practice:', this.recentWords);
+    console.log('📚 Total words:', this.recentWords.length);
 
     // If already connected, update the conversation context
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -820,6 +1043,8 @@ export class RealtimeClient {
     this.practiceMode = mode;
     this.currentWordIndex = 0;
     this.attemptCount = 0;
+    this.wordProgressionEnabled = (mode === 'pronunciation');
+    this.waitingForNextWord = false;
 
     // If already connected, update the mode
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -905,7 +1130,29 @@ export class RealtimeClient {
     }
   }
 
+  private attemptReconnect() {
+    this.reconnectAttempts++;
+    console.log(`Attempting reconnection ${this.reconnectAttempts}/${this.maxReconnectAttempts}...`);
+    
+    setTimeout(async () => {
+      try {
+        await this.connect();
+        this.reconnectAttempts = 0; // Reset on successful connection
+        console.log('Reconnection successful');
+        this.emit('reconnected');
+      } catch (error) {
+        console.error('Reconnection failed:', error);
+        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+          this.emit('error', new Error('Maximum reconnection attempts reached'));
+        }
+      }
+    }, this.reconnectDelay * this.reconnectAttempts);
+  }
+
   disconnect() {
+    // Prevent reconnection attempts
+    this.reconnectAttempts = this.maxReconnectAttempts;
+    
     // Clear playback queue
     this.playbackQueue = [];
     this.isPlaying = false;

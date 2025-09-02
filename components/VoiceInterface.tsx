@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Mic, MicOff, Phone, PhoneOff, Volume2 } from 'lucide-react';
+import { Mic, Phone, PhoneOff, Volume2 } from 'lucide-react';
 import { useStore } from '@/lib/store';
 import { RealtimeClient } from '@/lib/openai-realtime';
 
@@ -18,6 +18,8 @@ export function VoiceInterface() {
     practiceMode,
     homeLanguage,
     getRecentWords,
+    getWordsForPractice,
+    getAllWords,
     currentSession,
     startSession,
     endSession
@@ -75,13 +77,20 @@ export function VoiceInterface() {
         // Response finished, could update UI state here if needed
       });
 
-      client.on('error', (error: any) => {
+      client.on('error', (error: unknown) => {
         console.error('Realtime error:', error);
       });
 
       // Set context BEFORE connecting so it's available during session creation
-      const recentWords = getRecentWords(20);
-      client.updateContext(recentWords, homeLanguage);
+      // For pronunciation mode, use ALL words in their original order
+      const wordsToUse = practiceMode === 'pronunciation' 
+        ? getAllWords().slice(0, 10)  // Get first 10 words in original order
+        : getRecentWords(20);
+      
+      console.log('🎯 Practice mode:', practiceMode);
+      console.log('🎯 Words being sent:', wordsToUse.map(w => w.word));
+      
+      client.updateContext(wordsToUse, homeLanguage);
       client.setPracticeMode(practiceMode);
       
       // Now connect with the context already set

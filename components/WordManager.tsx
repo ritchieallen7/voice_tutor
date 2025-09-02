@@ -23,9 +23,11 @@ export function WordManager() {
 
   const handleBulkAdd = () => {
     const wordsArray = bulkWords.split('\n').filter(w => w.trim());
-    const wordsWithTimestamps = wordsArray.map((word, index) => ({
+    // Use the same timestamp for all bulk-added words to maintain proper order
+    const currentTime = new Date();
+    const wordsWithTimestamps = wordsArray.map((word) => ({
       word: word.trim(),
-      timestamp: new Date(Date.now() - index * 60000) // Stagger timestamps by 1 minute
+      timestamp: currentTime
     }));
     bulkAddWords(wordsWithTimestamps);
     setBulkWords('');

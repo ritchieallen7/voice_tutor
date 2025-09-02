@@ -8,6 +8,7 @@ export interface Word {
   mastery: number;
   practiceCount: number;
   lastPracticed?: Date;
+  orderIndex?: number; // For maintaining order of words
 }
 
 export interface Session {
@@ -51,6 +52,8 @@ export interface AppState {
   getMasteredWords: () => number;
   getRecentWords: (limit?: number) => Word[];
   getTodaysPractice: () => number;
+  getWordsForPractice: (limit?: number) => Word[];
+  getAllWords: () => Word[];
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -67,13 +70,15 @@ export const useStore = create<AppState>((set, get) => ({
       
       // Words management
       addWord: (word, language = 'en') => {
+        const state = get();
         const newWord: Word = {
           id: Date.now().toString(),
           word,
           timestamp: new Date(),
           language,
           mastery: 0,
-          practiceCount: 0
+          practiceCount: 0,
+          orderIndex: state.words.length // Maintain insertion order
         };
         set((state) => ({ words: [...state.words, newWord] }));
       },
@@ -95,13 +100,16 @@ export const useStore = create<AppState>((set, get) => ({
       },
       
       bulkAddWords: (newWords) => {
+        const state = get();
+        const currentMaxIndex = state.words.length;
         const words = newWords.map((w, index) => ({
           id: `${Date.now()}-${index}`,
           word: w.word,
           timestamp: w.timestamp,
           language: 'en',
           mastery: 0,
-          practiceCount: 0
+          practiceCount: 0,
+          orderIndex: currentMaxIndex + index // Maintain insertion order
         }));
         set((state) => ({ words: [...state.words, ...words] }));
       },
@@ -157,8 +165,14 @@ export const useStore = create<AppState>((set, get) => ({
       
       getRecentWords: (limit = 10) => {
         const words = get().words;
+        // Sort by orderIndex first (if available), then by timestamp
         return [...words]
-          .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+          .sort((a, b) => {
+            if (a.orderIndex !== undefined && b.orderIndex !== undefined) {
+              return b.orderIndex - a.orderIndex; // Most recent (highest index) first
+            }
+            return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+          })
           .slice(0, limit);
       },
       
@@ -167,6 +181,43 @@ export const useStore = create<AppState>((set, get) => ({
         return get().sessions.filter(s => 
           new Date(s.startTime).toDateString() === today
         ).length;
+      },
+      
+      // Get words for practice - prioritizes least practiced and lowest mastery
+      getWordsForPractice: (limit = 10) => {
+        const words = get().words;
+        if (words.length === 0) return [];
+        
+        // Sort by practice priority: least practiced first, then by mastery (lowest first)
+        return [...words]
+          .sort((a, b) => {
+            // First priority: practice count (lower is better)
+            if (a.practiceCount !== b.practiceCount) {
+              return a.practiceCount - b.practiceCount;
+            }
+            // Second priority: mastery level (lower is better)
+            if (a.mastery !== b.mastery) {
+              return a.mastery - b.mastery;
+            }
+            // Third priority: most recently added (higher orderIndex)
+            if (a.orderIndex !== undefined && b.orderIndex !== undefined) {
+              return b.orderIndex - a.orderIndex;
+            }
+            // Fallback to timestamp
+            return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+          })
+          .slice(0, Math.min(limit, words.length));
+      },
+      
+      // Get all words in the order they were added
+      getAllWords: () => {
+        const words = get().words;
+        return [...words].sort((a, b) => {
+          if (a.orderIndex !== undefined && b.orderIndex !== undefined) {
+            return a.orderIndex - b.orderIndex; // Original order
+          }
+          return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+        });
       }
     })
 );

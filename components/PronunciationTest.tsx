@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Phone, PhoneOff, Volume2, Check, X, ChevronRight, Award, RotateCcw } from 'lucide-react';
+import { Phone, PhoneOff, Volume2, Check, X, Award, RotateCcw } from 'lucide-react';
 import { useStore } from '@/lib/store';
 import { RealtimeClient } from '@/lib/openai-realtime';
 
@@ -28,17 +28,21 @@ export function PronunciationTest() {
   const clientRef = useRef<RealtimeClient | null>(null);
   
   const {
-    words,
     homeLanguage,
     updateWordMastery,
     incrementPracticeCount,
     startSession,
     endSession,
-    addWordToSession
+    addWordToSession,
+    getWordsForPractice,
+    getAllWords
   } = useStore();
 
-  // Get words to test (recent words or all if less than 10)
-  const testWords = words.slice(-10);
+  // Get words to test - prioritize least practiced words
+  const allWords = getAllWords();
+  const practiceWords = getWordsForPractice(10);
+  // Use practice words if available, otherwise use all words
+  const testWords = practiceWords.length > 0 ? practiceWords : allWords.slice(0, 10);
   const currentWord = testWords[currentWordIndex];
 
   useEffect(() => {
@@ -111,15 +115,27 @@ export function PronunciationTest() {
         setTutorTranscript(text);
         
         // Check if tutor is asking for pronunciation
-        if (text.includes('pronounce') || text.includes('say') || text.includes('repeat')) {
+        if (text.toLowerCase().includes('pronounce') || 
+            text.toLowerCase().includes('say') || 
+            text.toLowerCase().includes('repeat') ||
+            text.toLowerCase().includes('try')) {
           setWaitingForPronunciation(true);
         }
         
-        // Parse feedback for score
-        const scoreMatch = text.match(/Score:\s*(\d+)/i);
-        if (scoreMatch) {
-          const score = parseInt(scoreMatch[1]);
-          evaluatePronunciation(score, text);
+        // Parse feedback for score - look for various formats
+        const scorePatterns = [
+          /Score:\s*(\d+)/i,
+          /(\d+)\s*\/\s*100/i,
+          /(\d+)%/i
+        ];
+        
+        for (const pattern of scorePatterns) {
+          const match = text.match(pattern);
+          if (match) {
+            const score = parseInt(match[1]);
+            evaluatePronunciation(score, text);
+            break;
+          }
         }
       });
 
@@ -132,8 +148,12 @@ export function PronunciationTest() {
       });
 
       // Configure for pronunciation testing with first word
-      (client as any).setTestWord(testWords[0].word);
-      (client as any).setPracticeMode('pronunciation-test');
+      const clientWithMethods = client as RealtimeClient & {
+        setTestWord: (word: string) => void;
+        setPracticeMode: (mode: string) => void;
+      };
+      clientWithMethods.setTestWord(testWords[0].word);
+      clientWithMethods.setPracticeMode('pronunciation-test');
       client.updateContext([], homeLanguage);
       
       await client.connect();
@@ -188,11 +208,15 @@ export function PronunciationTest() {
       
       // Update the test word for the AI
       if (clientRef.current && testWords[nextIndex]) {
-        (clientRef.current as any).setTestWord(testWords[nextIndex].word);
+        const clientWithMethods = clientRef.current as RealtimeClient & {
+          setTestWord: (word: string) => void;
+          ws: WebSocket | null;
+        };
+        clientWithMethods.setTestWord(testWords[nextIndex].word);
         
         // Send instruction to test next word
-        if ((clientRef.current as any).ws && (clientRef.current as any).ws.readyState === WebSocket.OPEN) {
-          (clientRef.current as any).ws.send(JSON.stringify({
+        if (clientWithMethods.ws && clientWithMethods.ws.readyState === WebSocket.OPEN) {
+          clientWithMethods.ws.send(JSON.stringify({
             type: 'conversation.item.create',
             item: {
               type: 'message',
@@ -201,20 +225,30 @@ export function PronunciationTest() {
                 type: 'text',
                 text: `NEXT WORD TEST: "${testWords[nextIndex].word}"
                        
-                       Remember to:
-                       1. Ask the student to pronounce this word clearly
-                       2. Listen carefully and evaluate critically
-                       3. Give specific feedback on any pronunciation issues
-                       4. Provide a score from 0-100 based on accuracy
-                       5. End your feedback with "Score: [number]/100"
+                       EVALUATION REQUIREMENTS:
+                       1. Ask the student to pronounce "${testWords[nextIndex].word}" clearly
+                       2. Listen with expert precision for:
+                          - Phoneme accuracy (each sound)
+                          - Stress placement
+                          - Clarity and flow
+                       3. Provide SPECIFIC feedback:
+                          - Exactly which sounds need work
+                          - HOW to position mouth/tongue
+                          - What was good
+                       4. Give a fair score (0-100):
+                          - 90+: Excellent, near-native
+                          - 75-89: Good, minor issues
+                          - 60-74: Fair, noticeable errors
+                          - Below 60: Needs significant work
+                       5. ALWAYS end with: "Score: [number]/100"
                        
-                       Be honest but encouraging. Students need real feedback to improve!`
+                       Be honest but constructive - accurate feedback drives improvement!`
               }]
             }
           }));
           
           // Trigger response
-          (clientRef.current as any).ws.send(JSON.stringify({
+          clientWithMethods.ws.send(JSON.stringify({
             type: 'response.create',
             response: {
               modalities: ['text', 'audio'],
@@ -265,8 +299,9 @@ export function PronunciationTest() {
     
     // Ask AI to retry the current word
     if (clientRef.current && currentWord) {
-      if ((clientRef.current as any).ws && (clientRef.current as any).ws.readyState === WebSocket.OPEN) {
-        (clientRef.current as any).ws.send(JSON.stringify({
+      const clientWithWs = clientRef.current as RealtimeClient & { ws: WebSocket | null };
+      if (clientWithWs.ws && clientWithWs.ws.readyState === WebSocket.OPEN) {
+        clientWithWs.ws.send(JSON.stringify({
           type: 'conversation.item.create',
           item: {
             type: 'message',
@@ -275,19 +310,24 @@ export function PronunciationTest() {
               type: 'text',
               text: `The student wants to try pronouncing "${currentWord.word}" again.
                      
-                     IMPORTANT: Continue being CRITICAL in your evaluation!
-                     - Listen carefully to this new attempt
-                     - Compare it to their previous attempt
-                     - Note any improvements or continuing issues
-                     - Give a fair score based on this attempt
+                     RETRY EVALUATION PROTOCOL:
+                     - Listen MORE carefully to this attempt
+                     - Compare directly to their previous attempt
+                     - Note SPECIFIC improvements:
+                       * "The 'th' sound is better now"
+                       * "Your stress placement improved"
+                     - Identify remaining issues:
+                       * "The 'r' still needs more curl"
+                       * "Watch the vowel length"
+                     - Adjust score based on improvement
                      - End with "Score: [number]/100"
                      
-                     Be encouraging about improvements but honest about what still needs work.`
+                     Acknowledge effort while maintaining high standards!`
             }]
           }
         }));
         
-        (clientRef.current as any).ws.send(JSON.stringify({
+        clientWithWs.ws.send(JSON.stringify({
           type: 'response.create',
           response: {
             modalities: ['text', 'audio'],
