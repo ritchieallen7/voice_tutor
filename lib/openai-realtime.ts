@@ -165,8 +165,8 @@ export class RealtimeClient {
     // Check if we have enough words
     if (this.recentWords.length < 3) {
       const notEnoughWordsMsg = this.homeLanguage.toLowerCase() !== 'english'
-        ? `${this.homeLanguage}: You need at least 3 words to practice. Please go to FlashAcademy to complete some lessons and add more words.`
-        : `You need at least 3 words to practice. Please go to FlashAcademy to complete some lessons and add more words.`;
+        ? `${this.homeLanguage}: You need at least 3 words to practice. Please return to FlashAcademy to take lessons and learn new words. FlashAcademy will teach you many useful words and phrases!`
+        : `You need at least 3 words to practice. Please return to FlashAcademy to take lessons and learn new words. FlashAcademy will teach you many useful words and phrases!`;
       
       const sessionConfig = {
         type: 'session.update',
@@ -502,7 +502,7 @@ export class RealtimeClient {
           role: 'system',
           content: [{
             type: 'text',
-            text: `All words completed! Say: "Excellent work! You've practiced all the words. Your pronunciation is improving!"`
+            text: `All words completed! Say: "Excellent work! You've practiced all the words. Your pronunciation is improving! Now return to FlashAcademy to take more lessons and learn many more words. FlashAcademy has thousands of words waiting for you to discover!"`
           }]
         }
       }));
@@ -663,7 +663,7 @@ export class RealtimeClient {
           role: 'system',
           content: [{
             type: 'text',
-            text: `All words completed! Say: "Excellent work! You've practiced all the words. Great job!"`
+            text: `All words completed! Say: "Excellent work! You've practiced all the words. Great job on your pronunciation! Now it's time to return to FlashAcademy to take more lessons and learn many more words. FlashAcademy will help you expand your vocabulary!"`
           }]
         }
       }));
@@ -737,8 +737,8 @@ export class RealtimeClient {
       responseOutput = {
         status: 'completed',
         next_word: null,
-        exact_phrase_to_say: "Excellent work! You've completed all the words in today's practice session. Great job on your pronunciation!",
-        critical_instruction: "Practice session complete. Say the exact_phrase_to_say to congratulate the student."
+        exact_phrase_to_say: "Excellent work! You've completed all the words in today's practice session. Great job on your pronunciation! Now return to FlashAcademy to take more lessons and learn many more words. FlashAcademy has thousands of words and phrases waiting for you!",
+        critical_instruction: "Practice session complete. Say the exact_phrase_to_say and remind them to return to FlashAcademy."
       };
     } else {
       // Get next word
@@ -832,8 +832,8 @@ export class RealtimeClient {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     
     const completionMsg = this.homeLanguage.toLowerCase() !== 'english'
-      ? `Great job! You've practiced all the words. To learn more words, please go to FlashAcademy and complete some lessons. (Remember: say "FlashAcademy" in English, rest in ${this.homeLanguage})`
-      : 'Great job! You\'ve practiced all the words. To learn more words, please go to FlashAcademy and complete some lessons.';
+      ? `Excellent work! You've practiced all the words perfectly. Now it's time to return to FlashAcademy to take more lessons and learn many more words. FlashAcademy has thousands of words and phrases waiting for you to discover! (Remember: say "FlashAcademy" in English, rest in ${this.homeLanguage})`
+      : 'Excellent work! You\'ve practiced all the words perfectly. Now it\'s time to return to FlashAcademy to take more lessons and learn many more words. FlashAcademy has thousands of words and phrases waiting for you to discover!';
     
     this.ws.send(JSON.stringify({
       type: 'conversation.item.create',
