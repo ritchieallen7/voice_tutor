@@ -188,7 +188,7 @@ export class RealtimeClient {
             prefix_padding_ms: 500,
             silence_duration_ms: 800  // Natural speech timing
           },
-          temperature: 0.8
+          temperature: 0  // Set to 0 for deterministic responses
         }
       };
       this.ws.send(JSON.stringify(sessionConfig));
@@ -308,7 +308,7 @@ export class RealtimeClient {
           prefix_padding_ms: 500,  // Capture full utterance
           silence_duration_ms: 800  // Allow natural speech pauses
         },
-        temperature: 0.8
+        temperature: 0  // Set to 0 for deterministic responses
       }
     };
 
