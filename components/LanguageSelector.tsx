@@ -4,6 +4,7 @@ import { Globe } from 'lucide-react';
 import { useStore } from '@/lib/store';
 
 const languages = [
+  { code: 'en', name: 'English', native: 'English' },
   { code: 'es', name: 'Spanish', native: 'Español' },
   { code: 'fr', name: 'French', native: 'Français' },
   { code: 'de', name: 'German', native: 'Deutsch' },
